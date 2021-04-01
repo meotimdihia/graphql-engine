@@ -22,7 +22,9 @@ import {
   TOGGLE_ENUM_SUCCESS,
   TOGGLE_ENUM_FAILURE,
   MODIFY_ROOT_FIELD,
+  MODIFY_TABLE_CUSTOM_NAME,
   SET_CHECK_CONSTRAINTS,
+  SET_VIEW_DEF_SQL,
 } from '../TableModify/ModifyActions';
 
 // TABLE RELATIONSHIPS
@@ -38,6 +40,7 @@ import {
   MANUAL_REL_RESET,
   REL_SELECTION_CHANGED,
   REL_ADD_NEW_CLICKED,
+  SET_REMOTE_RELATIONSHIPS,
 } from '../TableRelationships/Actions';
 
 // TABLE PERMISSIONS
@@ -113,6 +116,11 @@ const modifyReducer = (tableName, schemas, modifyStateOrig, action) => {
       return {
         ...modifyState,
         viewDefinitionError: action.data,
+      };
+    case SET_VIEW_DEF_SQL:
+      return {
+        ...modifyState,
+        viewDefSql: action.data,
       };
 
     case REL_ADD_NEW_CLICKED:
@@ -584,6 +592,15 @@ const modifyReducer = (tableName, schemas, modifyStateOrig, action) => {
         ...modifyState,
         uniqueKeyModify: action.keys,
       };
+
+    case SET_REMOTE_RELATIONSHIPS:
+      return {
+        ...modifyState,
+        remoteRelationships: {
+          ...modifyState.remoteRelationships,
+          relationships: action.remoteRelationships,
+        },
+      };
     case TOGGLE_ENUM:
       return {
         ...modifyState,
@@ -605,6 +622,11 @@ const modifyReducer = (tableName, schemas, modifyStateOrig, action) => {
         tableEnum: {
           loading: false,
         },
+      };
+    case MODIFY_TABLE_CUSTOM_NAME:
+      return {
+        ...modifyState,
+        custom_name: action.data,
       };
     case MODIFY_ROOT_FIELD:
       return {

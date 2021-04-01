@@ -4,11 +4,13 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/hasura/graphql-engine/cli/internal/hasura"
+
 	"github.com/hasura/graphql-engine/cli/migrate"
 
 	"github.com/hasura/graphql-engine/cli"
-	"github.com/hasura/graphql-engine/cli/metadata/actions"
-	"github.com/hasura/graphql-engine/cli/metadata/actions/types"
+	"github.com/hasura/graphql-engine/cli/internal/metadataobject/actions"
+	"github.com/hasura/graphql-engine/cli/internal/metadataobject/actions/types"
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 )
@@ -50,7 +52,7 @@ type actionsCodegenOptions struct {
 }
 
 func (o *actionsCodegenOptions) run() (err error) {
-	migrateDrv, err := migrate.NewMigrate(o.EC, true)
+	migrateDrv, err := migrate.NewMigrate(o.EC, true, "", hasura.SourceKindPG)
 	if err != nil {
 		return err
 	}

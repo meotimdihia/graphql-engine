@@ -5,6 +5,15 @@ PLUGINS_BRANCH ?= master
 OS ?= linux darwin windows
 OUTPUT_DIR := _output
 
+HAS_GOX := $(shell command -v gox;)
+HAS_PKGER := $(shell command -v pkger;)
+
+ifeq (${CI}, true)
+	CLI_EXT_BIN_DIR := "/build/_cli_ext_output"
+else
+	CLI_EXT_BIN_DIR := "../cli-ext/bin"
+endif
+
 # compile assets
 .PHONY: assets
 assets:
@@ -12,9 +21,6 @@ ifndef HAS_PKGER
 	go get github.com/markbates/pkger/cmd/pkger
 endif
 	pkger -o pkg/console/templates/packed -include /pkg/console/templates/gohtml/
-
-HAS_GOX := $(shell command -v gox;)
-HAS_PKGER := $(shell command -v pkger;)
 
 .PHONY: deps
 # get dependencies
@@ -27,6 +33,7 @@ endif
 # build cli locally, for all given platform/arch
 .PHONY: build
 build: export CGO_ENABLED=0
+build: copy-cli-ext
 build:
 	gox -ldflags '-X github.com/hasura/graphql-engine/cli/version.BuildVersion=$(VERSION) -X github.com/hasura/graphql-engine/cli/plugins.IndexBranchRef=$(PLUGINS_BRANCH) -s -w -extldflags "-static"' \
 	-rebuild \
@@ -46,13 +53,27 @@ ci-copy-binary:
 	cp $(OUTPUT_DIR)/$(VERSION)/cli-hasura-* /build/_cli_output/binaries
 	echo "$(VERSION)" > /build/_cli_output/version.txt
 
+.PHONY: build-cli-ext
+build-cli-ext:
+	cd ../cli-ext && make deps && make build
+
+.PHONY: clean-cli-ext
+clean-cli-ext:
+	rm -rf ./internal/cliext/bin
+
+.PHONY: copy-cli-ext
+copy-cli-ext: clean-cli-ext
+	cp -r $(CLI_EXT_BIN_DIR) ./internal/cliext/bin
+
 # run tests
 .PHONY: test
-test:
+test: copy-cli-ext
 	go test -ldflags "-X github.com/hasura/graphql-engine/cli/version.BuildVersion=$(VERSION)" -v -tags="${TEST_TAGS}" `go list ./... | grep -v integration_test`
-	go test -ldflags "-X github.com/hasura/graphql-engine/cli/version.BuildVersion=$(VERSION)" -v -tags="${TEST_TAGS}" -run Commands/config=v1 ./integration_test
+integration_tests_config_v3: copy-cli-ext
+	go test -ldflags "-X github.com/hasura/graphql-engine/cli/version.BuildVersion=$(VERSION)" -v -tags="${TEST_TAGS}" -run Commands/config=v3 ./integration_test
+integration_tests_config_v2: copy-cli-ext
 	go test -ldflags "-X github.com/hasura/graphql-engine/cli/version.BuildVersion=$(VERSION)" -v -tags="${TEST_TAGS}" -run Commands/config=v2 ./integration_test
-
+test-all: test integration_tests_config_v2 integration_tests_config_v3
 # clean the output directory
 .PHONY: clean
 clean:

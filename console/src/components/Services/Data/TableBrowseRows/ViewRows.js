@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import 'react-table/react-table.css';
 import '../../../Common/TableCommon/ReactTableOverrides.css';
 import DragFoldTable, {
@@ -7,7 +7,7 @@ import DragFoldTable, {
 
 import Dropdown from '../../../Common/Dropdown/Dropdown';
 
-import InvokeManualTrigger from '../../EventTrigger/Common/InvokeManualTrigger/InvokeManualTrigger';
+import InvokeManualTrigger from '../../Events/EventTriggers/InvokeManualTrigger/InvokeManualTrigger';
 
 import {
   vExpandRel,
@@ -44,9 +44,9 @@ import {
 import {
   findTable,
   getRelationshipRefTable,
-  getTableName,
-  getTableSchema,
-} from '../../../Common/utils/pgUtils';
+  dataSource,
+  currentDriver,
+} from '../../../../dataSources';
 import { updateSchemaInfo } from '../DataActions';
 import {
   persistColumnCollapseChange,
@@ -54,50 +54,54 @@ import {
   persistColumnOrderChange,
   getPersistedColumnsOrder,
   persistPageSizeChange,
-} from './localStorageUtils';
+} from './tableUtils';
+import { compareRows, isTableWithPK } from './utils';
+import styles from '../../../Common/TableCommon/Table.scss';
 
-const ViewRows = ({
-  curTableName,
-  currentSchema,
-  curQuery,
-  curFilter,
-  curRows,
-  curPath,
-  parentTableName,
-  curDepth,
-  activePath,
-  schemas,
-  dispatch,
-  ongoingRequest,
-  isProgressing,
-  lastError,
-  lastSuccess,
-  isView,
-  count,
-  expandedRow,
-  manualTriggers = [],
-  updateInvocationRow,
-  updateInvocationFunction,
-  triggeredRow,
-  triggeredFunction,
-  location,
-  readOnlyMode,
-}) => {
+const ViewRows = props => {
+  const {
+    curTableName,
+    currentSchema,
+    curQuery,
+    curFilter,
+    curRows,
+    curPath = [],
+    parentTableName,
+    curDepth,
+    activePath,
+    schemas,
+    dispatch,
+    ongoingRequest,
+    isProgressing,
+    lastError,
+    lastSuccess,
+    isView,
+    count,
+    expandedRow,
+    manualTriggers = [],
+    location,
+    readOnlyMode,
+    shouldHidePagination,
+    currentSource,
+  } = props;
+  const [invokedRow, setInvokedRow] = useState(null);
+  const [invocationFunc, setInvocationFunc] = useState(null);
   const [selectedRows, setSelectedRows] = useState([]);
-
-  const styles = require('../../../Common/TableCommon/Table.scss');
+  useEffect(() => {
+    setSelectedRows([]);
+  }, [curTableName, currentSchema]);
 
   const NO_PRIMARY_KEY_MSG = 'No primary key to identify row';
 
   // Invoke manual trigger status
   const invokeTrigger = (trigger, row) => {
-    updateInvocationRow(row);
-    updateInvocationFunction(trigger);
+    setInvokedRow(row);
+    setInvocationFunc(trigger);
   };
 
   const onCloseInvokeTrigger = () => {
-    updateInvocationRow(-1);
-    updateInvocationFunction(null);
+    setInvokedRow(null);
+    setInvokedRow(null);
   };
 
   const handleAllCheckboxChange = e => {
@@ -132,12 +136,6 @@ const ViewRows = ({
     return _isSingleRow;
   };
 
-  const checkIfHasPrimaryKey = _tableSchema => {
-    return (
-      _tableSchema.primary_key && _tableSchema.primary_key.columns.length > 0
-    );
-  };
-
   const getGridHeadings = (_columns, _relationships, _disableBulkSelect) => {
     const _gridHeadings = [];
 
@@ -160,6 +158,7 @@ const ViewRows = ({
             title={_disableBulkSelect ? 'No primary key to identify row' : ''}
             type="checkbox"
             onChange={handleAllCheckboxChange}
+            data-test="select-all-rows"
           />
         </div>
       ),
@@ -214,30 +213,12 @@ const ViewRows = ({
     return _gridHeadings;
   };
 
-  const compareRows = (row1, row2, _tableSchema, _hasPrimaryKey) => {
-    let same = true;
-    if (!isView && _hasPrimaryKey) {
-      _tableSchema.primary_key.columns.map(pk => {
-        if (row1[pk] !== row2[pk]) {
-          same = false;
-        }
-      });
-      return same;
-    }
-    _tableSchema.columns.map(k => {
-      if (row1[k.column_name] !== row2[k.column_name]) {
-        return false;
-      }
-    });
-    return same;
-  };
-
-  const handleCheckboxChange = (row, e, ...rest) => {
+  const handleCheckboxChange = (row, e, tableSchema) => {
     if (e.target.checked) {
       setSelectedRows(prev => [...prev, row]);
     } else {
       setSelectedRows(prev =>
-        prev.filter(prevRow => !compareRows(prevRow, row, ...rest))
+        prev.filter(prevRow => !compareRows(prevRow, row, tableSchema, isView))
       );
     }
   };
@@ -246,14 +227,26 @@ const ViewRows = ({
     const pkClause = {};
 
     if (!isView && hasPrimaryKey) {
-      tableSchema.primary_key.columns.map(pk => {
-        pkClause[pk] = row[pk];
+      tableSchema.primary_key.columns.forEach(key => {
+        pkClause[key] = row[key];
+      });
+    } else if (tableSchema.unique_constraints?.length) {
+      tableSchema.unique_constraints[0].columns.forEach(key => {
+        pkClause[key] = row[key];
       });
     } else {
-      tableSchema.columns.map(k => {
-        pkClause[k.column_name] = row[k.column_name];
-      });
+      tableSchema.columns
+        .filter(c => !dataSource.isJsonColumn(c))
+        .forEach(key => {
+          pkClause[key.column_name] = row[key.column_name];
+        });
     }
+
+    Object.keys(pkClause).forEach(key => {
+      if (Array.isArray(pkClause[key])) {
+        pkClause[key] = dataSource.arrayToPostgresArray(pkClause[key]);
+      }
+    });
 
     return pkClause;
   };
@@ -277,7 +270,6 @@ const ViewRows = ({
         let cloneButton;
         let deleteButton;
         let expandButton;
-        let manualTriggersButton;
 
         const getActionButton = (
           type,
@@ -341,7 +333,14 @@ const ViewRows = ({
           const handleEditClick = () => {
             dispatch({ type: E_SET_EDITITEM, oldItem: row, pkClause });
             dispatch(
-              _push(getTableEditRowRoute(currentSchema, curTableName, true))
+              _push(
+                getTableEditRowRoute(
+                  currentSchema,
+                  currentSource,
+                  curTableName,
+                  true
+                )
+              )
             );
           };
 
@@ -360,6 +359,9 @@ const ViewRows = ({
           const deleteIcon = <i className="fa fa-trash" />;
 
           const handleDeleteClick = () => {
+            setSelectedRows(prev =>
+              prev.filter(r => !compareRows(r, pkClause, _tableSchema, isView))
+            );
             dispatch(deleteItem(pkClause, curTableName, currentSchema));
           };
 
@@ -380,7 +382,14 @@ const ViewRows = ({
           const handleCloneClick = () => {
             dispatch({ type: I_SET_CLONE, clone: row });
             dispatch(
-              _push(getTableInsertRowRoute(currentSchema, curTableName, true))
+              _push(
+                getTableInsertRowRoute(
+                  currentSchema,
+                  currentSource,
+                  curTableName,
+                  true
+                )
+              )
             );
           };
 
@@ -408,13 +417,11 @@ const ViewRows = ({
                     color="white"
                     size="xs"
                     data-test={`run_manual_trigger_${m.name}`}
-                    onClick={() =>
-                      invokeTrigger.apply(undefined, [m.name, rowIndex])
-                    }
+                    onClick={() => invokeTrigger(m.name, rowIndex)}
                   >
                     Invoke
                   </Button>
-                  {`${m.name}`}
+                  {m.name}
                 </div>
               ),
             };
@@ -430,29 +437,25 @@ const ViewRows = ({
             () => {}
           );
 
-          const invokeManualTrigger = r =>
-            triggeredRow === rowIndex && (
-              <InvokeManualTrigger
-                args={r}
-                name={`${triggeredFunction}`}
-                onClose={onCloseInvokeTrigger}
-                key={`invoke_function_${triggeredFunction}`}
-                identifier={`invoke_function_${triggeredFunction}`}
-              />
-            );
-
           return (
             <div className={styles.display_inline}>
               <Dropdown
                 testId={`data_browse_rows_trigger_${rowIndex}`}
                 options={triggerOptions}
                 position="right"
-                key={`invoke_data_dropdown_${rowIndex}`}
                 keyPrefix={`invoke_data_dropdown_${rowIndex}`}
               >
                 {triggerBtn}
               </Dropdown>
-              {invokeManualTrigger(row)}
+              {invokedRow === rowIndex && (
+                <InvokeManualTrigger
+                  source={currentSource}
+                  args={row}
+                  name={`${invocationFunc}`}
+                  onClose={onCloseInvokeTrigger}
+                  identifier={`invoke_function_${invocationFunc}`}
+                />
+              )}
             </div>
           );
         };
@@ -469,16 +472,17 @@ const ViewRows = ({
 
         // eslint-disable-next-line prefer-const
         expandButton = getExpandButton();
-        // eslint-disable-next-line prefer-const
-        manualTriggersButton = getManualTriggersButton();
 
         return (
-          <div key={rowIndex} className={styles.tableCellCenterAligned}>
+          <div
+            key={rowIndex}
+            className={`${styles.tableCenterContent} ${styles.overflowUnset}`}
+          >
             {cloneButton}
             {editButton}
             {deleteButton}
             {expandButton}
-            {manualTriggersButton}
+            {getManualTriggersButton()}
           </div>
         );
       };
@@ -495,11 +499,10 @@ const ViewRows = ({
             disabled={_disableBulkSelect}
             title={_disableBulkSelect ? NO_PRIMARY_KEY_MSG : ''}
             checked={selectedRows.some(selectedRow =>
-              compareRows(selectedRow, row, _tableSchema, _hasPrimaryKey)
+              compareRows(selectedRow, row, _tableSchema, isView)
             )}
-            onChange={e =>
-              handleCheckboxChange(row, e, _tableSchema, _hasPrimaryKey)
-            }
+            onChange={e => handleCheckboxChange(row, e, _tableSchema, isView)}
+            data-test={`row-checkbox-${rowIndex}`}
           />
         </div>
       );
@@ -641,7 +644,7 @@ const ViewRows = ({
   const tableColumnsSorted = tableSchema.columns.sort(ordinalColSort);
   const tableRelationships = tableSchema.relationships;
 
-  const hasPrimaryKey = checkIfHasPrimaryKey(tableSchema);
+  const hasPrimaryKey = isTableWithPK(tableSchema);
 
   const isSingleRow = checkIfSingleRow(curRelName);
 
@@ -718,6 +721,7 @@ const ViewRows = ({
             className={`${styles.add_mar_right_small} btn btn-xs btn-default ${styles.bulkDeleteButton}`}
             title="Delete selected rows"
             onClick={handleDeleteItems}
+            data-test="bulk-delete"
           >
             <i className="fa fa-trash" />
           </button>
@@ -775,8 +779,8 @@ const ViewRows = ({
           return (
             <ViewRows
               key={i}
-              curTableName={getTableName(childTable)}
-              currentSchema={getTableSchema(childTable)}
+              curTableName={childTable.table_name}
+              currentSchema={childTable.table_schema}
               curQuery={cq}
               curFilter={curFilter}
               curPath={[...curPath, rel.rel_name]}
@@ -791,6 +795,7 @@ const ViewRows = ({
               dispatch={dispatch}
               expandedRow={expandedRow}
               readOnlyMode={readOnlyMode}
+              currentSource={currentSource}
             />
           );
         }
@@ -930,9 +935,60 @@ const ViewRows = ({
       }
     };
 
+    const PaginationWithOnlyNav = () => {
+      const newPage = curFilter.offset / curFilter.limit;
+      return (
+        <div className={`row`} style={{ maxWidth: '500px' }}>
+          <div className="col-xs-2">
+            <button
+              className="btn"
+              onClick={() => handlePageChange(newPage - 1)}
+              disabled={curFilter.offset === 0}
+            >
+              prev
+            </button>
+          </div>
+          <div className="col-xs-4">
+            <select
+              value={curFilter.limit}
+              onChange={e => {
+                e.persist();
+                handlePageSizeChange(parseInt(e.target.value, 10) || 10);
+              }}
+              className="form-control"
+            >
+              <option disabled value="">
+                --
+              </option>
+              <option value={5}>5 rows</option>
+              <option value={10}>10 rows</option>
+              <option value={20}>20 rows</option>
+              <option value={25}>25 rows</option>
+              <option value={50}>50 rows</option>
+              <option value={100}>100 rows</option>
+            </select>
+          </div>
+          <div className="col-xs-2">
+            <button
+              className="btn"
+              onClick={() => handlePageChange(newPage + 1)}
+              disabled={curRows.length === 0}
+            >
+              next
+            </button>
+          </div>
+        </div>
+      );
+    };
+
+    const mssqlProps = {};
+    if (currentDriver === 'mssql') {
+      mssqlProps.PaginationComponent = PaginationWithOnlyNav;
+    }
+
     return (
       <DragFoldTable
-        className="-highlight -fit-content"
+        className="dataTable -highlight -fit-content"
         data={_gridRows}
         columns={_gridHeadings}
         headerTitle={'Click to sort / Drag to rearrange'}
@@ -960,6 +1016,8 @@ const ViewRows = ({
           persistColumnOrderChange(curTableName, currentSchema, reorderData)
         }
         defaultReorders={columnsOrder}
+        showPagination={!shouldHidePagination}
+        {...mssqlProps}
       />
     );
   };

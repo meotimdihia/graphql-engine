@@ -1,25 +1,35 @@
 -- | Types and classes related to configuration when the server is initialised
 module Hasura.Server.Init.Config where
 
-import qualified Data.Aeson                       as J
-import qualified Data.Aeson.TH                    as J
-import qualified Data.HashSet                     as Set
-import qualified Data.String                      as DataString
-import qualified Data.Text                        as T
-import qualified Database.PG.Query                as Q
+import qualified Data.Aeson                               as J
+import qualified Data.Aeson.Casing                        as J
+import qualified Data.Aeson.TH                            as J
+import qualified Data.HashSet                             as Set
+import qualified Data.String                              as DataString
+import qualified Data.Text                                as T
+import qualified Database.PG.Query                        as Q
+import qualified Network.WebSockets                       as WS
 
-import           Data.Char                        (toLower)
-import           Data.Time.Clock.Units            (milliseconds)
-import           Network.Wai.Handler.Warp         (HostPreference)
 
-import qualified Hasura.Cache                     as Cache
-import qualified Hasura.GraphQL.Execute           as E
-import qualified Hasura.GraphQL.Execute.LiveQuery as LQ
-import qualified Hasura.Logging                   as L
+import           Data.Aeson
+import           Data.Char                                (toLower)
+import           Data.Time
+import           Data.URL.Template
+import           Network.Wai.Handler.Warp                 (HostPreference)
+
+import qualified Hasura.Cache.Bounded                     as Cache
+import qualified Hasura.GraphQL.Execute.LiveQuery.Options as LQ
+import qualified Hasura.GraphQL.Execute.Plan              as E
+import qualified Hasura.Logging                           as L
+import qualified System.Metrics                           as EKG
+import qualified System.Metrics.Distribution              as EKG.Distribution
+import qualified System.Metrics.Gauge                     as EKG.Gauge
 
 import           Hasura.Prelude
+import           Hasura.RQL.Types
 import           Hasura.Server.Auth
 import           Hasura.Server.Cors
+import           Hasura.Server.Types
 import           Hasura.Session
 
 data RawConnParams
@@ -27,36 +37,76 @@ data RawConnParams
   { rcpStripes      :: !(Maybe Int)
   , rcpConns        :: !(Maybe Int)
   , rcpIdleTime     :: !(Maybe Int)
+  , rcpConnLifetime :: !(Maybe NominalDiffTime)
+  -- ^ Time from connection creation after which to destroy a connection and
+  -- choose a different/new one.
   , rcpAllowPrepare :: !(Maybe Bool)
+  , rcpPoolTimeout  :: !(Maybe NominalDiffTime)
+  -- ^ See @HASURA_GRAPHQL_PG_POOL_TIMEOUT@
   } deriving (Show, Eq)
 
-type RawAuthHook = AuthHookG (Maybe T.Text) (Maybe AuthHookType)
+type RawAuthHook = AuthHookG (Maybe Text) (Maybe AuthHookType)
+
+-- | Sleep time interval for async actions poller (@'asyncActionsProcessor')
+data AsyncActionsFetchInterval
+  = AAFINoFetch -- ^ No polling
+  | AAFIInterval !Milliseconds -- ^ Interval time
+  deriving (Show, Eq)
+
+msToAsyncActionsFetchInterval :: Milliseconds -> AsyncActionsFetchInterval
+msToAsyncActionsFetchInterval = \case
+  0 -> AAFINoFetch
+  s -> AAFIInterval s
+
+readAsyncActionFetchInterval
+  :: String -> Either String AsyncActionsFetchInterval
+readAsyncActionFetchInterval s = do
+  millisecs <- readEither s
+  pure $ msToAsyncActionsFetchInterval millisecs
+
+instance FromJSON AsyncActionsFetchInterval where
+  parseJSON v = msToAsyncActionsFetchInterval <$> parseJSON v
+
+instance ToJSON AsyncActionsFetchInterval where
+  toJSON = \case
+    AAFINoFetch    -> toJSON @Milliseconds 0
+    AAFIInterval s -> toJSON s
 
 data RawServeOptions impl
   = RawServeOptions
-  { rsoPort                :: !(Maybe Int)
-  , rsoHost                :: !(Maybe HostPreference)
-  , rsoConnParams          :: !RawConnParams
-  , rsoTxIso               :: !(Maybe Q.TxIsolation)
-  , rsoAdminSecret         :: !(Maybe AdminSecret)
-  , rsoAuthHook            :: !RawAuthHook
-  , rsoJwtSecret           :: !(Maybe JWTConfig)
-  , rsoUnAuthRole          :: !(Maybe RoleName)
-  , rsoCorsConfig          :: !(Maybe CorsConfig)
-  , rsoEnableConsole       :: !Bool
-  , rsoConsoleAssetsDir    :: !(Maybe Text)
-  , rsoEnableTelemetry     :: !(Maybe Bool)
-  , rsoWsReadCookie        :: !Bool
-  , rsoStringifyNum        :: !Bool
-  , rsoEnabledAPIs         :: !(Maybe [API])
-  , rsoMxRefetchInt        :: !(Maybe LQ.RefetchInterval)
-  , rsoMxBatchSize         :: !(Maybe LQ.BatchSize)
-  , rsoEnableAllowlist     :: !Bool
-  , rsoEnabledLogTypes     :: !(Maybe [L.EngineLogType impl])
-  , rsoLogLevel            :: !(Maybe L.LogLevel)
-  , rsoPlanCacheSize       :: !(Maybe Cache.CacheSize)
-  , rsoDevMode             :: !Bool
-  , rsoAdminInternalErrors :: !(Maybe Bool)
+  { rsoPort                          :: !(Maybe Int)
+  , rsoHost                          :: !(Maybe HostPreference)
+  , rsoConnParams                    :: !RawConnParams
+  , rsoTxIso                         :: !(Maybe Q.TxIsolation)
+  , rsoAdminSecret                   :: !(Maybe AdminSecretHash)
+  , rsoAuthHook                      :: !RawAuthHook
+  , rsoJwtSecret                     :: !(Maybe JWTConfig)
+  , rsoUnAuthRole                    :: !(Maybe RoleName)
+  , rsoCorsConfig                    :: !(Maybe CorsConfig)
+  , rsoEnableConsole                 :: !Bool
+  , rsoConsoleAssetsDir              :: !(Maybe Text)
+  , rsoEnableTelemetry               :: !(Maybe Bool)
+  , rsoWsReadCookie                  :: !Bool
+  , rsoStringifyNum                  :: !Bool
+  , rsoEnabledAPIs                   :: !(Maybe [API])
+  , rsoMxRefetchInt                  :: !(Maybe LQ.RefetchInterval)
+  , rsoMxBatchSize                   :: !(Maybe LQ.BatchSize)
+  , rsoEnableAllowlist               :: !Bool
+  , rsoEnabledLogTypes               :: !(Maybe [L.EngineLogType impl])
+  , rsoLogLevel                      :: !(Maybe L.LogLevel)
+  , rsoPlanCacheSize                 :: !(Maybe Cache.CacheSize)
+  , rsoDevMode                       :: !Bool
+  , rsoAdminInternalErrors           :: !(Maybe Bool)
+  , rsoEventsHttpPoolSize            :: !(Maybe Int)
+  , rsoEventsFetchInterval           :: !(Maybe Milliseconds)
+  , rsoAsyncActionsFetchInterval     :: !(Maybe AsyncActionsFetchInterval)
+  , rsoLogHeadersFromEnv             :: !Bool
+  , rsoEnableRemoteSchemaPermissions :: !Bool
+  , rsoWebSocketCompression          :: !Bool
+  , rsoWebSocketKeepAlive            :: !(Maybe Int)
+  , rsoInferFunctionPermissions      :: !(Maybe Bool)
+  , rsoEnableMaintenanceMode         :: !Bool
+  , rsoExperimentalFeatures          :: !(Maybe [ExperimentalFeature])
   }
 
 -- | @'ResponseInternalErrorsConfig' represents the encoding of the internal
@@ -71,50 +121,88 @@ data ResponseInternalErrorsConfig
 shouldIncludeInternal :: RoleName -> ResponseInternalErrorsConfig -> Bool
 shouldIncludeInternal role = \case
   InternalErrorsAllRequests -> True
-  InternalErrorsAdminOnly   -> isAdmin role
+  InternalErrorsAdminOnly   -> role == adminRoleName
   InternalErrorsDisabled    -> False
+
+newtype KeepAliveDelay
+  = KeepAliveDelay
+      { unKeepAliveDelay :: Seconds
+      } deriving (Eq, Show)
 
 data ServeOptions impl
   = ServeOptions
-  { soPort                         :: !Int
-  , soHost                         :: !HostPreference
-  , soConnParams                   :: !Q.ConnParams
-  , soTxIso                        :: !Q.TxIsolation
-  , soAdminSecret                  :: !(Maybe AdminSecret)
-  , soAuthHook                     :: !(Maybe AuthHook)
-  , soJwtSecret                    :: !(Maybe JWTConfig)
-  , soUnAuthRole                   :: !(Maybe RoleName)
-  , soCorsConfig                   :: !CorsConfig
-  , soEnableConsole                :: !Bool
-  , soConsoleAssetsDir             :: !(Maybe Text)
-  , soEnableTelemetry              :: !Bool
-  , soStringifyNum                 :: !Bool
-  , soEnabledAPIs                  :: !(Set.HashSet API)
-  , soLiveQueryOpts                :: !LQ.LiveQueriesOptions
-  , soEnableAllowlist              :: !Bool
-  , soEnabledLogTypes              :: !(Set.HashSet (L.EngineLogType impl))
-  , soLogLevel                     :: !L.LogLevel
-  , soPlanCacheOptions             :: !E.PlanCacheOptions
-  , soResponseInternalErrorsConfig :: !ResponseInternalErrorsConfig
+  { soPort                          :: !Int
+  , soHost                          :: !HostPreference
+  , soConnParams                    :: !Q.ConnParams
+  , soTxIso                         :: !Q.TxIsolation
+  , soAdminSecret                   :: !(Maybe AdminSecretHash)
+  , soAuthHook                      :: !(Maybe AuthHook)
+  , soJwtSecret                     :: !(Maybe JWTConfig)
+  , soUnAuthRole                    :: !(Maybe RoleName)
+  , soCorsConfig                    :: !CorsConfig
+  , soEnableConsole                 :: !Bool
+  , soConsoleAssetsDir              :: !(Maybe Text)
+  , soEnableTelemetry               :: !Bool
+  , soStringifyNum                  :: !Bool
+  , soEnabledAPIs                   :: !(Set.HashSet API)
+  , soLiveQueryOpts                 :: !LQ.LiveQueriesOptions
+  , soEnableAllowlist               :: !Bool
+  , soEnabledLogTypes               :: !(Set.HashSet (L.EngineLogType impl))
+  , soLogLevel                      :: !L.LogLevel
+  , soPlanCacheOptions              :: !E.PlanCacheOptions
+  , soResponseInternalErrorsConfig  :: !ResponseInternalErrorsConfig
+  , soEventsHttpPoolSize            :: !(Maybe Int)
+  , soEventsFetchInterval           :: !(Maybe Milliseconds)
+  , soAsyncActionsFetchInterval     :: !AsyncActionsFetchInterval
+  , soLogHeadersFromEnv             :: !Bool
+  , soEnableRemoteSchemaPermissions :: !RemoteSchemaPermsCtx
+  , soConnectionOptions             :: !WS.ConnectionOptions
+  , soWebsocketKeepAlive            :: !KeepAliveDelay
+  , soInferFunctionPermissions      :: !FunctionPermissionsCtx
+  , soEnableMaintenanceMode         :: !MaintenanceMode
+  , soExperimentalFeatures          :: !(Set.HashSet ExperimentalFeature)
   }
 
 data DowngradeOptions
   = DowngradeOptions
-  { dgoTargetVersion :: !T.Text
+  { dgoTargetVersion :: !Text
   , dgoDryRun        :: !Bool
   } deriving (Show, Eq)
 
-data RawConnInfo =
-  RawConnInfo
-  { connHost     :: !(Maybe String)
-  , connPort     :: !(Maybe Int)
-  , connUser     :: !(Maybe String)
+data PostgresConnInfo a
+  = PostgresConnInfo
+  { _pciDatabaseConn :: !a
+  , _pciRetries      :: !(Maybe Int)
+  } deriving (Show, Eq, Functor, Foldable, Traversable)
+
+data PostgresRawConnDetails =
+  PostgresRawConnDetails
+  { connHost     :: !String
+  , connPort     :: !Int
+  , connUser     :: !String
   , connPassword :: !String
-  , connUrl      :: !(Maybe String)
-  , connDatabase :: !(Maybe String)
+  , connDatabase :: !String
   , connOptions  :: !(Maybe String)
-  , connRetries  :: !(Maybe Int)
   } deriving (Eq, Read, Show)
+
+data PostgresRawConnInfo
+  = PGConnDatabaseUrl !URLTemplate
+  | PGConnDetails !PostgresRawConnDetails
+  deriving (Show, Eq)
+
+rawConnDetailsToUrl :: PostgresRawConnDetails -> URLTemplate
+rawConnDetailsToUrl =
+  mkPlainURLTemplate . rawConnDetailsToUrlText
+
+rawConnDetailsToUrlText :: PostgresRawConnDetails -> Text
+rawConnDetailsToUrlText PostgresRawConnDetails{..} =
+  T.pack $
+    "postgresql://" <> connUser <>
+    ":" <> connPassword <>
+    "@" <> connHost <>
+    ":" <> show connPort <>
+    "/" <> connDatabase <>
+    maybe "" ("?options=" <>) connOptions
 
 data HGECommandG a
   = HCServe !a
@@ -132,22 +220,26 @@ data API
   | DEVELOPER
   | CONFIG
   deriving (Show, Eq, Read, Generic)
+
 $(J.deriveJSON (J.defaultOptions { J.constructorTagModifier = map toLower })
   ''API)
 
 instance Hashable API
 
+$(J.deriveJSON (J.aesonPrefix J.camelCase){J.omitNothingFields=True} ''PostgresRawConnDetails)
+
 type HGECommand impl = HGECommandG (ServeOptions impl)
 type RawHGECommand impl = HGECommandG (RawServeOptions impl)
 
-data HGEOptionsG a
+data HGEOptionsG a b
   = HGEOptionsG
-  { hoConnInfo :: !RawConnInfo
-  , hoCommand  :: !(HGECommandG a)
+  { hoDatabaseUrl   :: !(PostgresConnInfo a)
+  , hoMetadataDbUrl :: !(Maybe String)
+  , hoCommand       :: !(HGECommandG b)
   } deriving (Show, Eq)
 
-type RawHGEOptions impl = HGEOptionsG (RawServeOptions impl)
-type HGEOptions impl = HGEOptionsG (ServeOptions impl)
+type RawHGEOptions impl = HGEOptionsG (Maybe PostgresRawConnInfo) (RawServeOptions impl)
+type HGEOptions impl = HGEOptionsG (Maybe UrlConf) (ServeOptions impl)
 
 type Env = [(String, String)]
 
@@ -189,6 +281,12 @@ readAPIs = mapM readAPI . T.splitOn "," . T.pack
           "CONFIG"    -> Right CONFIG
           _            -> Left "Only expecting list of comma separated API types metadata,graphql,pgdump,developer,config"
 
+readExperimentalFeatures :: String -> Either String [ExperimentalFeature]
+readExperimentalFeatures = mapM readAPI . T.splitOn "," . T.pack
+  where readAPI si = case T.toLower $ T.strip si of
+          "inherited_roles" -> Right EFInheritedRoles
+          _                 -> Left "Only expecting list of comma separated experimental features"
+
 readLogLevel :: String -> Either String L.LogLevel
 readLogLevel s = case T.toLower $ T.strip $ T.pack s of
   "debug" -> Right L.LevelDebug
@@ -202,6 +300,11 @@ readJson = J.eitherDecodeStrict . txtToBs . T.pack
 
 class FromEnv a where
   fromEnv :: String -> Either String a
+
+-- Deserialize from seconds, in the usual way
+instance FromEnv NominalDiffTime where
+  fromEnv s = maybe (Left "could not parse as a Double") (Right . realToFrac) $
+                (readMaybe s :: Maybe Double)
 
 instance FromEnv String where
   fromEnv = Right
@@ -218,8 +321,8 @@ instance FromEnv AuthHookType where
 instance FromEnv Int where
   fromEnv = maybe (Left "Expecting Int value") Right . readMaybe
 
-instance FromEnv AdminSecret where
-  fromEnv = Right . AdminSecret . T.pack
+instance FromEnv AdminSecretHash where
+  fromEnv = Right . hashAdminSecret . T.pack
 
 instance FromEnv RoleName where
   fromEnv string = case mkRoleName (T.pack string) of
@@ -238,11 +341,21 @@ instance FromEnv CorsConfig where
 instance FromEnv [API] where
   fromEnv = readAPIs
 
+instance FromEnv [ExperimentalFeature] where
+  fromEnv = readExperimentalFeatures
+
 instance FromEnv LQ.BatchSize where
-  fromEnv = fmap LQ.BatchSize . readEither
+  fromEnv s = do
+    val <- readEither s
+    maybe (Left "batch size should be a non negative integer") Right $ LQ.mkBatchSize val
 
 instance FromEnv LQ.RefetchInterval where
-  fromEnv = fmap (LQ.RefetchInterval . milliseconds . fromInteger) . readEither
+  fromEnv x = do
+    val <- fmap (milliseconds . fromInteger) . readEither $ x
+    maybe (Left "refetch interval should be a non negative integer") Right $ LQ.mkRefetchInterval val
+
+instance FromEnv Milliseconds where
+  fromEnv = fmap fromInteger . readEither
 
 instance FromEnv JWTConfig where
   fromEnv = readJson
@@ -254,9 +367,36 @@ instance FromEnv L.LogLevel where
   fromEnv = readLogLevel
 
 instance FromEnv Cache.CacheSize where
-  fromEnv = Cache.mkCacheSize
+  fromEnv = Cache.parseCacheSize
+
+instance FromEnv URLTemplate where
+  fromEnv = parseURLTemplate . T.pack
+
+instance FromEnv AsyncActionsFetchInterval where
+  fromEnv = readAsyncActionFetchInterval
 
 type WithEnv a = ReaderT Env (ExceptT String Identity) a
 
 runWithEnv :: Env -> WithEnv a -> Either String a
 runWithEnv env m = runIdentity $ runExceptT $ runReaderT m env
+
+-- | Collection of various server metrics
+data ServerMetrics
+  = ServerMetrics
+  { smWarpThreads         :: !EKG.Gauge.Gauge
+  -- ^ Current Number of warp threads
+  , smNumEventsFetched    :: !EKG.Distribution.Distribution
+  -- ^ Total Number of events fetched from last 'Event Trigger Fetch'
+  , smNumEventHTTPWorkers :: !EKG.Gauge.Gauge
+  -- ^ Current number of Event trigger's HTTP workers in process
+  , smEventLockTime       :: !EKG.Distribution.Distribution
+  -- ^ Time between the 'Event Trigger Fetch' from DB and the processing of the event
+  }
+
+createServerMetrics :: EKG.Store -> IO ServerMetrics
+createServerMetrics store = do
+  smWarpThreads <- EKG.createGauge "warp_threads" store
+  smNumEventsFetched <- EKG.createDistribution "num_events_fetched" store
+  smNumEventHTTPWorkers <- EKG.createGauge "num_event_trigger_http_workers" store
+  smEventLockTime <- EKG.createDistribution "event_lock_time" store
+  pure ServerMetrics { .. }

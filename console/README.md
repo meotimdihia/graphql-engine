@@ -25,8 +25,8 @@ Feel free to open pull requests to address these issues or to add/fix  console f
 ### Prerequisites
 
 - [Node.js](https://nodejs.org/en/) (v8.9+)
-- [Hasura GraphQL Engine](https://hasura.io/docs/1.0/graphql/manual/getting-started/index.html)
-- [Hasura CLI](https://hasura.io/docs/1.0/graphql/manual/hasura-cli/install-hasura-cli.html) (for working with migrations)
+- [Hasura GraphQL Engine](https://hasura.io/docs/latest/graphql/core/getting-started/index.html)
+- [Hasura CLI](https://hasura.io/docs/latest/graphql/core/hasura-cli/install-hasura-cli.html) (for working with migrations)
 
 ### Set up and install dependencies
 
@@ -44,7 +44,7 @@ npm ci
 
 Hasura console can be developed in two modes, `server` or `cli` mode. If you are looking to add/tweak functionality related to migrations, check out [Develop with Hasura CLI](#develop-with-hasura-cli-cli-mode), otherwise check out [Develop with Hasura GraphQL engine](#develop-with-hasura-graphql-engine-server-mode).
 
-Both modes require a running instance of GraphQL Engine. The easiest way to get Hasura GraphQL engine instance is by Heroku. You can get it by following the steps given in [this](https://hasura.io/docs/1.0/graphql/manual/getting-started/heroku-simple.html) link. Other methods to install Hasura GraphQL engine are documented [here](https://hasura.io/docs/1.0/graphql/manual/getting-started/index.html).
+Both modes require a running instance of GraphQL Engine. The easiest way to get Hasura GraphQL engine instance is by Heroku. You can get it by following the steps given in [this](https://hasura.io/docs/latest/graphql/core/getting-started/heroku-simple.html) link. Other methods to install Hasura GraphQL engine are documented [here](https://hasura.io/docs/latest/graphql/core/getting-started/index.html).
 
 [Dotenv](https://github.com/motdotla/dotenv) is used for setting environment variables for development. In production, these environment variables are templated by the server or CLI.
 
@@ -62,7 +62,7 @@ Environment variables accepted in `server` mode:
 - `ASSETS_VERSION`: Version of console assets being served 
 - `ENABLE_TELEMETRY`: Whether to enable telemetry (`true`/`false`)
 - `URL_PREFIX`: Path at which the console is running
-- `DATA_API_URL`: The Hasura GraphQL engine url. (If you are running it on Heroku, it will look like <app-name\>.herokuapp.com, if you are running locally, it will look like http://localhost:<port\>)
+- `DATA_API_URL`: The Hasura GraphQL engine url. (If you are running it on Heroku, it will look like https://<app-name\>.herokuapp.com, if you are running locally, it will look like http://localhost:<port\>)
 - `SERVER_VERSION`: Hasura GraphQL Engine server version
 - `CONSOLE_MODE`: In server mode, it should be `server`
 - `IS_ADMIN_SECRET_SET`: Is GraphQl engine configured with an admin secret (`true`/`false`)
@@ -171,6 +171,22 @@ You can disable it if you wish by commenting out the `createLogger` line in `src
 - Run tests: `npm run cypress`
 - Write your tests in the `cypress` directory, integration.
 
+### Linter and formatter
+
+Pre-commit git-hook that runs linter and formatter is by default disabled. You can enable it by adding `HUSKY_PRE_COMMIT=true` to your `.env` file.
+
+If you want to run a linter for all files, you can do:
+
+```bash
+npm run lint
+```
+
+To format all files, you can run:
+
+```bash
+npm run format
+```
+
 ### Submitting a pull request
 
 - All the development work happens in your own fork of the graphql-engine.
@@ -181,3 +197,7 @@ You can disable it if you wish by commenting out the `createLogger` line in `src
 - The source code and the preview app will be reviewed by maintainers.
 
 <!-- prettier-ignore-end -->
+
+### Working with PRO console
+
+Wiki page: https://github.com/hasura/graphql-engine-internal/wiki/Console:-Code-Sharing-Between-OSS-and-PRO

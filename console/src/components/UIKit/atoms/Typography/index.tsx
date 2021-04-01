@@ -7,6 +7,7 @@ export const Heading = StyledHeading;
 
 Heading.defaultProps = {
   color: 'black.text',
+  fontWeight: 'bold',
 };
 
 /**
@@ -16,15 +17,21 @@ Heading.defaultProps = {
  *  fontSize: 'explain'
  *  fontWeight: 'bold'
  */
+
 export type TextProps = {
-  type: keyof Theme['lineHeights'];
-  fontWeight: keyof Theme['fontWeights'];
-  fontSize: keyof Theme['fontSizes'];
-  mb: keyof Theme['space'];
-  mt: keyof Theme['space'];
-  mr: keyof Theme['space'];
-  ml: keyof Theme['space'];
-}
+  type?: keyof Theme['lineHeights'];
+  fontWeight?: keyof Theme['fontWeights'];
+  fontSize?: keyof Theme['fontSizes'];
+  mb?: keyof Theme['space'];
+  mt?: keyof Theme['space'];
+  mr?: keyof Theme['space'];
+  ml?: keyof Theme['space'];
+  pl?: keyof Theme['space'];
+  as?: keyof JSX.IntrinsicElements | React.ComponentType<any>;
+  color?: keyof Theme['colors'];
+  px?: keyof Theme['space'];
+  py?: keyof Theme['space'];
+};
 
 export const Text: React.FC<TextProps> = props => {
   const { children, type, fontWeight, fontSize } = props;
@@ -64,12 +71,16 @@ Text.defaultProps = {
   mt: 'zero',
   mr: 'zero',
   ml: 'zero',
+  pl: 'zero',
+  fontWeight: 'normal',
+  fontSize: 'p',
+  color: 'black',
 };
 
 type TextLinkProps = {
   underline: boolean;
   color: string;
-}
+};
 
 export const TextLink: React.FC<TextLinkProps> = props => {
   const { children, underline } = props;
